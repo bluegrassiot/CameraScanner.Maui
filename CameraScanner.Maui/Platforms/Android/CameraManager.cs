@@ -21,6 +21,7 @@ using Paint = Android.Graphics.Paint;
 using Point = Microsoft.Maui.Graphics.Point;
 using RectF = Microsoft.Maui.Graphics.RectF;
 using Size = Android.Util.Size;
+using System.ComponentModel;
 
 namespace CameraScanner.Maui
 {
@@ -74,11 +75,13 @@ namespace CameraScanner.Maui
 
             this.cameraController = new LifecycleCameraController(this.context)
             {
-                PinchToZoomEnabled = true,
-                TapToFocusEnabled = this.cameraView.TapToFocusEnabled,
-                ImageAnalysisBackpressureStrategy = ImageAnalysis.StrategyKeepOnlyLatest
+                PinchToZoomEnabled = false,
+                TapToFocusEnabled = false,
+                ImageCaptureMode = ImageCapture.CaptureModeMaximizeQuality
+                // ImageAnalysisBackpressureStrategy = ImageAnalysis.StrategyKeepOnlyLatest
             };
-            this.cameraController.SetEnabledUseCases(CameraController.ImageAnalysis);
+
+            this.cameraController.SetEnabledUseCases(CameraController.ImageCapture);
             this.cameraController.ZoomState.ObserveForever(this.zoomStateObserver);
             this.cameraController.InitializationFuture.AddListener(new Java.Lang.Runnable(() =>
             {
@@ -90,6 +93,8 @@ namespace CameraScanner.Maui
             this.torchStateObserver = new TorchStateObserver();
             this.torchStateObserver.ValueChanged += this.OnTorchStateChanged;
             this.cameraController.TorchState.ObserveForever(this.torchStateObserver);
+
+            this.cameraView.PropertyChanged += this.CameraView_PropertyChanged;
 
             this.previewView = new PreviewView(this.context)
             {
@@ -491,11 +496,114 @@ namespace CameraScanner.Maui
             }
         }
 
-        internal void CaptureImage(IImageProxy proxy)
+        private void TakePicture()
         {
-            this.cameraView.CaptureNextFrame = false;
-            var image = new PlatformImage(proxy.ToBitmap());
-            this.cameraView.TriggerOnImageCaptured(image);
+            var executor = ContextCompat.GetMainExecutor(this.context);
+
+            var callback = new ImageCaptureCallback(this);
+
+            this.cameraController.TakePicture(executor, callback);
+        }
+        
+        private void CameraView_PropertyChanged(object sender, PropertyChangedEventArgs e)
+        {
+            if (e.PropertyName == nameof(CameraView.CaptureNextFrame))
+            {
+                if (this.cameraView.CaptureNextFrame)
+                {
+                    // Trigger image capture
+                    this.TakePicture();
+                }
+            }
+        }
+
+        public async void CaptureImage(IImageProxy proxy)
+        {
+            try
+            {
+                await MainThread.InvokeOnMainThreadAsync(async () =>
+                {
+                    this.logger.LogDebug("CaptureImage: Focusing before capture");
+                    this.cameraView.CaptureNextFrame = false;
+
+                    // Attempt to focus before capturing
+                    await this.FocusBeforeCaptureAsync();
+
+                    // Capture the image
+                    var image = new PlatformImage(proxy.ToBitmap());
+                    this.cameraView.TriggerOnImageCaptured(image);
+                });
+            }
+            catch (Exception ex)
+            {
+                this.logger.LogError(ex, "Error during image capture");
+
+                // Fallback to direct capture if focusing fails
+                var image = new PlatformImage(proxy.ToBitmap());
+                this.cameraView.TriggerOnImageCaptured(image);
+            }
+        }
+
+        private async Task FocusBeforeCaptureAsync()
+        {
+            if (this.cameraController?.CameraControl == null)
+            {
+                return;
+            }
+
+            await MainThread.InvokeOnMainThreadAsync(async () =>
+            {
+                try
+                {
+                    // Focus on the center of the preview
+                    var centerX = (float)this.previewView.Width / 2;
+                    var centerY = (float)this.previewView.Height / 2;
+
+                    var meteringPointFactory = this.previewView.MeteringPointFactory;
+                    var meteringPoint = meteringPointFactory.CreatePoint(centerX, centerY);
+
+                    var action = new FocusMeteringAction.Builder(meteringPoint)
+                        .SetAutoCancelDuration(2000, TimeUnit.Milliseconds)
+                        .Build();
+
+                    // Start focusing and get the ListenableFuture
+                    var future = this.cameraController.CameraControl.StartFocusAndMetering(action);
+
+                    // Create a TaskCompletionSource to convert the ListenableFuture to a Task
+                    var tcs = new TaskCompletionSource<Java.Lang.Object>();
+
+                    // Add a listener to the future
+                    future.AddListener(new Java.Lang.Runnable(() =>
+                    {
+                        try
+                        {
+                            var result = future.Get();
+                            tcs.TrySetResult(result);
+                        }
+                        catch (Exception ex)
+                        {
+                            tcs.TrySetException(ex);
+                        }
+                    }), ContextCompat.GetMainExecutor(this.context));
+
+                    // Wait for the focus with a timeout
+                    var timeoutTask = Task.Delay(1500);
+                    var completedTask = await Task.WhenAny(tcs.Task, timeoutTask);
+
+                    if (completedTask == timeoutTask)
+                    {
+                        this.logger.LogDebug("Focus timed out, proceeding with capture");
+                    }
+                    else
+                    {
+                        this.logger.LogDebug("Focus completed successfully");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    this.logger.LogWarning(ex, "Error during focus, proceeding with capture");
+                }
+            });
         }
 
         private void UpdateOutput()
@@ -545,6 +653,7 @@ namespace CameraScanner.Maui
             if (disposing)
             {
                 this.deviceDisplay.MainDisplayInfoChanged -= this.OnMainDisplayInfoChanged;
+                this.cameraView.PropertyChanged -= this.CameraView_PropertyChanged;
 
                 this.Stop();
 
