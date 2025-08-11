@@ -155,6 +155,7 @@ namespace CameraScanner.Maui
             this.logger.LogDebug("OnZoomStateChanged");
 
             this.UpdateCurrentZoomFactor(e.ZoomState);
+            this.UpdateRequestZoomFactor();
         }
 
         private void UpdateCurrentZoomFactor(IZoomState zoomState)
