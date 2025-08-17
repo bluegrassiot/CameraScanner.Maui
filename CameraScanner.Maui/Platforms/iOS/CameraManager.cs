@@ -8,10 +8,13 @@ using CoreImage;
 using CoreMedia;
 using CoreVideo;
 using Foundation;
+using MediaPlayer;
 using Microsoft.Extensions.Logging;
 using Microsoft.Maui.Graphics.Platform;
 using UIKit;
 using Vision;
+using AVFoundation;
+using Foundation;
 
 namespace CameraScanner.Maui
 {
@@ -148,6 +151,26 @@ namespace CameraScanner.Maui
                     captureSession.CanAddOutput(videoDataOutput))
                 {
                     ConfigureCaptureSession(captureSession, cs => cs.AddOutput(videoDataOutput));
+                }
+
+                // Assume: session, videoInput, and videoDataOutput already created & added
+                var connection = videoDataOutput.Connections
+                    .FirstOrDefault(c => c.InputPorts.Any(p => p.MediaType == AVFoundation.AVMediaTypes.Video.ToString()));
+
+                if (connection != null)
+                {
+                    // Orientation (optional)
+                    if (connection.SupportsVideoOrientation)
+                    {
+                        connection.VideoOrientation = AVCaptureVideoOrientation.Portrait;
+                    }
+
+                    // Electronic image stabilization (EIS)
+                    if (connection.SupportsVideoStabilization)
+                    {
+                        connection.PreferredVideoStabilizationMode = AVCaptureVideoStabilizationMode.Auto;
+                    }
+                    // Try .Standard if you want lower latency than Cinematic
                 }
 
                 captureSession.StartRunning();
