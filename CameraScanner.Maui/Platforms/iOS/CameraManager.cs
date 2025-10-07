@@ -303,6 +303,62 @@ namespace CameraScanner.Maui
             await this.UpdateCameraAsync();
         }
 
+        private AVCaptureDevice? SelectSingleLensCamera()
+        {
+            // Single-lens types (NOT virtual):
+            var singleLensTypes = new[]
+            {
+                AVCaptureDeviceType.BuiltInWideAngleCamera,   // most common back camera
+                AVCaptureDeviceType.BuiltInTelephotoCamera,   // if you want tighter FOV
+                AVCaptureDeviceType.BuiltInUltraWideCamera    // if you want wider FOV
+                // (Front cameras are also single-lens but handled as fallback)
+            };
+
+            // 1) Prefer back wide (single lens)
+            var backWide = FindSingleLens(singleLensTypes: [AVCaptureDeviceType.BuiltInWideAngleCamera],
+                                          position: AVCaptureDevicePosition.Back);
+            if (backWide != null)
+            {
+                return backWide;
+            }
+
+            // 2) Fallback: back telephoto (single lens)
+            var backTele = FindSingleLens(singleLensTypes: [AVCaptureDeviceType.BuiltInTelephotoCamera],
+                                          position: AVCaptureDevicePosition.Back);
+            if (backTele != null)
+            {
+                return backTele;
+            }
+
+            // 3) Fallback: back ultra-wide (single lens)
+            var backUltra = FindSingleLens(singleLensTypes: [AVCaptureDeviceType.BuiltInUltraWideCamera],
+                                           position: AVCaptureDevicePosition.Back);
+            if (backUltra != null)
+            {
+                return backUltra;
+            }
+
+            // 4) Last resort: front wide (single lens)
+            var frontWide = FindSingleLens(singleLensTypes: [AVCaptureDeviceType.BuiltInWideAngleCamera],
+                                           position: AVCaptureDevicePosition.Front);
+            return frontWide;
+        }
+
+        private static AVCaptureDevice? FindSingleLens(AVCaptureDeviceType[] singleLensTypes, AVCaptureDevicePosition position)
+        {
+            var discovery = AVCaptureDeviceDiscoverySession.Create(
+                singleLensTypes,
+                AVMediaTypes.Video,
+                position);
+
+            // Reject any device that exposes switch-over zoom factors (a tell for virtual devices).
+            // Then pick something stable (e.g., highest max zoom so you have some room).
+            return discovery.Devices
+                .Where(d => (d.VirtualDeviceSwitchOverVideoZoomFactors?.Length ?? 0) == 0)
+                .OrderByDescending(d => d.ActiveFormat?.VideoMaxZoomFactor ?? 1.0f)
+                .FirstOrDefault();
+        }
+
         internal async Task UpdateCameraAsync()
         {
             using (await this.updateCameraLock.LockAsync())
@@ -321,6 +377,7 @@ namespace CameraScanner.Maui
                     return;
                 }
 
+
                 if (this.captureSession != null)
                 {
                     try
@@ -336,12 +393,15 @@ namespace CameraScanner.Maui
                             // Find the camera with the most virtual device switch overs.
                             // This is the virtual camera which allows to zoom through all physical cameras.
                             // More info: https://developer.apple.com/documentation/avfoundation/avcaptureprimaryconstituentdevicerestrictedswitchingbehaviorconditions
-                            var selectedCaptureDevice = captureDeviceDiscoverySession.Devices
-                                .OrderByDescending(d => d.VirtualDeviceSwitchOverVideoZoomFactors.Length)
-                                .FirstOrDefault();
+                            //var selectedCaptureDevice = captureDeviceDiscoverySession.Devices
+                            //    .OrderByDescending(d => d.VirtualDeviceSwitchOverVideoZoomFactors.Length)
+                            //    .FirstOrDefault();
+                            var selectedCaptureDevice = this.SelectSingleLensCamera();
 
-                            virtualDeviceSwitchOverVideoZoomFactor = selectedCaptureDevice.VirtualDeviceSwitchOverVideoZoomFactors
-                                .FirstOrDefault()?.FloatValue;
+                            virtualDeviceSwitchOverVideoZoomFactor = (float?)selectedCaptureDevice?.MinAvailableVideoZoomFactor;
+
+                            //virtualDeviceSwitchOverVideoZoomFactor = selectedCaptureDevice.VirtualDeviceSwitchOverVideoZoomFactors
+                            //    .FirstOrDefault()?.FloatValue;
 
                             this.captureDevice = selectedCaptureDevice;
                         }
